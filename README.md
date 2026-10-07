@@ -106,8 +106,8 @@ AI_Product_Decision_Agent/
 ├── README.md                      # Project documentation
 ├── .env.example                   # Environment variable template
 ├── .gitignore                     # Keeps secrets and local files out of git
-└── .streamlit/
-    └── config.toml                # Streamlit configuration
+└── .streamlit                     # Streamlit configuration
+                                   
 ```
 
 ## Quick reference
