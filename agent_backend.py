@@ -402,17 +402,18 @@ RESEARCH_TOOLS = [search_web, read_webpage]
 # ============================================================
 
 class Product(BaseModel):
-    name: str
-    store: str = "Unknown"
-    url: str = ""
+    # Text fields may be missing/null in LLM output. Keep the schema tolerant.
+    name: str = "Unknown"
+    store: Optional[str] = "Unknown"
+    url: Optional[str] = ""
     price_sar: Optional[float] = None
-    cpu: str = "Unknown"
-    gpu: str = "Unknown"
+    cpu: Optional[str] = "Unknown"
+    gpu: Optional[str] = "Unknown"
     ram_gb: Optional[int] = None
     storage_gb: Optional[int] = None
-    display: str = "Unknown"
-    availability: str = "Unknown"
-    evidence: str = ""
+    display: Optional[str] = "Unknown"
+    availability: Optional[str] = "Unknown"
+    evidence: Optional[str] = ""
 
 
 class ProductList(BaseModel):
@@ -806,6 +807,59 @@ Do not invent any fact that is not present in the provided results or page conte
     }
 
 
+TEXT_FIELDS = [
+    "name",
+    "store",
+    "url",
+    "cpu",
+    "gpu",
+    "display",
+    "availability",
+    "evidence",
+]
+
+
+def sanitize_product_payload(data: Any) -> dict:
+    """Normalize LLM output before Pydantic validation.
+
+    The normalizer LLM may legitimately return null for fields such as
+    display/availability/cpu/gpu. Those are optional product attributes,
+    so convert null/non-string values to safe text defaults before
+    ProductList.model_validate().
+    """
+    if not isinstance(data, dict):
+        return {"products": []}
+
+    raw_products = data.get("products") or []
+    if not isinstance(raw_products, list):
+        return {"products": []}
+
+    clean_products = []
+    for raw in raw_products:
+        if not isinstance(raw, dict):
+            continue
+
+        p = dict(raw)
+
+        for field_name in TEXT_FIELDS:
+            value = p.get(field_name)
+            if value is None or not isinstance(value, str) or not value.strip():
+                p[field_name] = "" if field_name == "evidence" else "Unknown"
+            else:
+                p[field_name] = value.strip()
+
+        p["price_sar"] = coerce_number(p.get("price_sar"))
+
+        ram = coerce_number(p.get("ram_gb"))
+        storage = coerce_number(p.get("storage_gb"))
+        p["ram_gb"] = int(ram) if ram is not None else None
+        p["storage_gb"] = int(storage) if storage is not None else None
+
+        clean_products.append(p)
+
+    return {"products": clean_products}
+
+
 async def normalize_node(state: ProductDecisionState) -> dict:
     prompt = f"""
 RESEARCH NOTES:
@@ -815,17 +869,25 @@ RAW SEARCH RESULTS:
 {state.get('raw_search_results', '')}
 
 Extract only products that are actually supported by the evidence.
+For missing text fields, use null or "Unknown". Do not invent values.
 """
     result = await run_agent(normalizer_agent, prompt)
-    data = extract_json(result["answer"])
-    for p in data.get("products", []):
-        if p.get("price_sar") is not None:
-            p["price_sar"] = coerce_number(p["price_sar"])
-        if p.get("ram_gb") is not None:
-            p["ram_gb"] = int(coerce_number(p["ram_gb"]) or 0) or None
-        if p.get("storage_gb") is not None:
-            p["storage_gb"] = int(coerce_number(p["storage_gb"]) or 0) or None
-    products = ProductList.model_validate(data)
+    raw_data = extract_json(result["answer"])
+    data = sanitize_product_payload(raw_data)
+    try:
+        products = ProductList.model_validate(data)
+    except ValidationError as exc:
+        # Last-resort safety path: never crash the entire user search because
+        # of malformed optional LLM fields. Keep only safely sanitized items.
+        safe_products = []
+        for item in data.get("products", []):
+            try:
+                safe_products.append(Product.model_validate(item))
+            except ValidationError:
+                continue
+        products = ProductList(products=safe_products)
+        logger.warning("Product normalization validation recovered from malformed LLM fields: %s", exc)
+
     updates = {
         "products_json": products.model_dump_json(),
         "metrics": merge_metrics(state, "normalizer", result["metadata"]),
