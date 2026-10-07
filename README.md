@@ -1,103 +1,131 @@
-# AI Product Decision Agent — Streamlit
+# AI Product Decision Agent
 
-This project converts the working Colab notebook into a Streamlit app without changing the core agent architecture.
+A live-web **AI Product Decision Agent**. You provide a product, its intended use, and your maximum budget. The system researches current Saudi-market listings, compares candidates, checks the evidence, retries when the evidence is insufficient, and produces a final recommendation with sources and direct product links.
+
+The project uses LangChain 1.x `create_agent` and LangGraph's Graph API (`StateGraph`) to build and orchestrate the multi-agent system.
+
+## Streamlit App
+
+1. Enter the product you are looking for.
+2. Describe what you will use it for.
+3. Set your maximum budget in SAR.
+4. Run the agent and wait for the research and verification stages.
+5. View the recommended products, supporting evidence, prices, stores, specifications, and direct product links.
+
+## On your own machine
+
+```bash
+python -m venv .venv
+```
+
+Windows:
+
+```bash
+.venv\Scripts\activate
+```
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Create `.env` from `.env.example` and paste your API keys:
+
+```env
+OPENROUTER_API_KEY=your_openrouter_key
+TAVILY_API_KEY=your_tavily_key
+```
+
+Run the Streamlit app:
+
+```bash
+streamlit run app.py
+```
+
+## Streamlit Community Cloud
+
+1. Push this repository to GitHub.
+2. Create a new Streamlit Community Cloud app.
+3. Select this repository and the `main` branch.
+4. Set `app.py` as the main file.
+5. Add the following secrets in Streamlit Community Cloud:
+
+```toml
+OPENROUTER_API_KEY = "your_openrouter_key"
+TAVILY_API_KEY = "your_tavily_key"
+```
+
+Never commit your `.env` file or API keys to GitHub.
+
+## How to submit
+
+1. Make sure the repository is **public** so the project can be accessed from GitHub.
+2. Make sure your latest commit contains the working project files and this `README.md`.
+3. Keep your `.env` file out of the repository — it contains your API keys and is already included in `.gitignore`.
+4. Tag the academy so the submission can be identified by adding this line at the bottom of `README.md`:
+
+   ```markdown
+   Submitted by: Ammar Yasser — academy: @SDAIAAcademy
+   ```
+
+5. Your submission is complete when the latest commit contains the working application, backend, and the README line above.
+
+## Architecture
+
+```text
+User
+  ↓
+Requirements Agent
+  ↓
+Planner Agent
+  ↓
+Parallel Web Search
+  ↓
+Research Agent
+  ↓
+Product Normalizer
+  ↓
+Comparison Agent
+  ↓
+Critic Agent
+  ├── PASS → Final Agent
+  │
+  └── FAIL → Retry Planner → Research → Comparison → Critic
+```
+
+The system also includes loop detection, tool-call limits, checkpoint memory, token/cost tracking, and evidence validation.
 
 ## Structure
 
 ```text
-ai_product_streamlit_app/
-├── app.py
-├── agent_backend.py
-├── requirements.txt
-├── .env.example
-├── .gitignore
-├── README.md
+AI_Product_Decision_Agent/
+├── app.py                         # Streamlit frontend
+├── agent_backend.py               # Agentic AI backend
+├── requirements.txt               # Dependencies
+├── README.md                      # Project documentation
+├── .env.example                   # Environment variable template
+├── .gitignore                     # Keeps secrets and local files out of git
 └── .streamlit/
-    ├── config.toml
-    └── secrets.toml.example
+    └── config.toml                # Streamlit configuration
 ```
 
-## Local setup in VS Code
+## Quick reference
 
-Recommended: use Python 3.12 locally so your environment matches the default Python version currently used by Streamlit Community Cloud.
-
-### 1. Create a virtual environment
-
-Windows PowerShell:
-
-```powershell
-py -3.12 -m venv .venv
-.venv\Scripts\Activate.ps1
-```
-
-### 2. Install dependencies
-
-```powershell
-python -m pip install --upgrade pip
+```bash
+python -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
-```
-
-### 3. Add your API keys
-
-Copy `.env.example` to `.env` and put your real keys there:
-
-```text
-OPENROUTER_API_KEY=...
-TAVILY_API_KEY=...
-```
-
-Do not commit `.env`.
-
-### 4. Run Streamlit
-
-```powershell
 streamlit run app.py
 ```
 
-The app opens in your browser.
-
-## What the app does
-
-Page 1:
-- Product name
-- Purpose / use case
-- Maximum budget
-
-The app converts those fields into a user request and sends it to the existing agent pipeline.
-
-Page 2:
-- Final agent recommendation
-- Product candidates
-- Price
-- Saudi source/store
-- Specifications available from the agent
-- Evidence
-- Direct product link
-
-## Streamlit Community Cloud
-
-The project already includes `requirements.txt`, which is the standard dependency file for Community Cloud.
-
-1. Push these files to a GitHub repository.
-2. Create a Streamlit Community Cloud app using `app.py` as the entrypoint.
-3. In Advanced settings, use Python 3.12.
-4. In Secrets, add:
+For Streamlit Community Cloud, set:
 
 ```toml
-OPENROUTER_API_KEY = "..."
-TAVILY_API_KEY = "..."
+OPENROUTER_API_KEY = "your_openrouter_key"
+TAVILY_API_KEY = "your_tavily_key"
 ```
 
-Do not upload `.env` or real secret files to GitHub.
+## Submission
 
-## Important note
-
-The agent uses live web research, so price and stock can change. The app shows the source URL so the user can verify the final listing directly.
-
-## Current agent source
-
-`agent_backend.py` is derived from the working notebook `Untitled3 (1)(2).ipynb`. The production changes are limited to:
-- replacing Colab-only installation/setup with standard Python environment loading
-- exposing the existing async pipeline to Streamlit
-- removing notebook test cells from the production module
-- adding the Streamlit UI
+Submitted by: Ammar Yasser — academy: @SDAIAAcademy
