@@ -402,7 +402,6 @@ RESEARCH_TOOLS = [search_web, read_webpage]
 # ============================================================
 
 class Product(BaseModel):
-    # Text fields may be missing/null in LLM output. Keep the schema tolerant.
     name: str = "Unknown"
     store: Optional[str] = "Unknown"
     url: Optional[str] = ""
@@ -475,19 +474,27 @@ For a laptop request, translate phrases such as beginner in AI into practical pr
 
 RESEARCHER_PROMPT = """
 You are the Research Agent in a live product-decision system focused on Saudi Arabia.
-You receive the user's requirements and preliminary web search results.
-Your job is to verify useful candidates from current web pages.
 
-Use the search_web and read_webpage tools when evidence is missing or ambiguous.
-Prioritize exact product configurations, Saudi availability, SAR prices, and direct product pages.
+You receive the user's requirements and preliminary web search results that were
+already collected by the outer research node.
+
+Analyze ONLY the supplied evidence.
+Do NOT call tools.
+Do NOT browse again.
+Do NOT use general knowledge to fill missing facts.
+
+Prioritize exact product configurations, Saudi availability, SAR prices, direct
+product pages, and explicit CPU/GPU/RAM/storage evidence.
+
 Do not treat a "starting from" price as proof of a higher specification.
-Do not invent specifications. If a field is unknown, say Unknown.
+If a field is missing, write Unknown.
+If evidence conflicts, explicitly flag the conflict.
 
 Return concise research notes with:
 1) candidate products,
 2) exact evidence and URLs,
-3) any price/specification ambiguity,
-4) any source-quality concerns.
+3) price/specification ambiguity,
+4) source-quality concerns.
 """
 
 NORMALIZER_PROMPT = """
@@ -584,11 +591,12 @@ If the critic status is FAIL after the retry budget is exhausted, do NOT present
 planner_agent = create_agent(model=llm, tools=[], system_prompt=PLANNER_PROMPT)
 requirements_agent = create_agent(model=llm, tools=[], system_prompt=REQUIREMENTS_PROMPT)
 
+# Research is already performed by research_node.
+# This agent only analyzes the collected evidence to avoid nested tool loops.
 research_agent = create_agent(
     model=llm,
-    tools=RESEARCH_TOOLS,
+    tools=[],
     system_prompt=RESEARCHER_PROMPT,
-    middleware=[ToolCallLimitMiddleware(thread_limit=8, exit_behavior="end")],
 )
 
 normalizer_agent = create_agent(model=llm, tools=[], system_prompt=NORMALIZER_PROMPT)
@@ -615,7 +623,7 @@ def content_to_text(content: Any) -> str:
 
 
 @observe(name="agent_run", as_type="agent")
-async def run_agent(agent, query: str, max_steps: int = 8) -> dict:
+async def run_agent(agent, query: str, max_steps: int = 4) -> dict:
     result = await agent.ainvoke(
         {"messages": [("user", query)]},
         config={"recursion_limit": 2 * max_steps + 1},
@@ -796,7 +804,7 @@ Previous critic feedback (if any):
 Verify the strongest candidates. Use read_webpage for direct product pages where useful.
 Do not invent any fact that is not present in the provided results or page content.
 """
-    result = await run_agent(research_agent, research_prompt, max_steps=8)
+    result = await run_agent(research_agent, research_prompt, max_steps=2)
     return {
         "raw_search_results": bundle,
         "research_notes": result["answer"],
@@ -807,41 +815,36 @@ Do not invent any fact that is not present in the provided results or page conte
     }
 
 
-TEXT_FIELDS = [
-    "name",
-    "store",
-    "url",
-    "cpu",
-    "gpu",
-    "display",
-    "availability",
-    "evidence",
-]
+async def normalize_node(state: ProductDecisionState) -> dict:
+    prompt = f"""
+RESEARCH NOTES:
+{state['research_notes']}
 
+RAW SEARCH RESULTS:
+{state.get('raw_search_results', '')}
 
-def sanitize_product_payload(data: Any) -> dict:
-    """Normalize LLM output before Pydantic validation.
+Extract only products that are actually supported by the evidence.
+"""
+    result = await run_agent(normalizer_agent, prompt)
+    data = extract_json(result["answer"])
 
-    The normalizer LLM may legitimately return null for fields such as
-    display/availability/cpu/gpu. Those are optional product attributes,
-    so convert null/non-string values to safe text defaults before
-    ProductList.model_validate().
-    """
     if not isinstance(data, dict):
-        return {"products": []}
+        data = {"products": []}
 
-    raw_products = data.get("products") or []
-    if not isinstance(raw_products, list):
-        return {"products": []}
+    text_fields = [
+        "name", "store", "url", "cpu", "gpu",
+        "display", "availability", "evidence"
+    ]
 
     clean_products = []
-    for raw in raw_products:
-        if not isinstance(raw, dict):
+    for raw_product in data.get("products", []) or []:
+        if not isinstance(raw_product, dict):
             continue
 
-        p = dict(raw)
+        p = dict(raw_product)
 
-        for field_name in TEXT_FIELDS:
+        # Prevent null / non-string optional fields from breaking Pydantic.
+        for field_name in text_fields:
             value = p.get(field_name)
             if value is None or not isinstance(value, str) or not value.strip():
                 p[field_name] = "" if field_name == "evidence" else "Unknown"
@@ -857,37 +860,19 @@ def sanitize_product_payload(data: Any) -> dict:
 
         clean_products.append(p)
 
-    return {"products": clean_products}
+    data = {"products": clean_products}
 
-
-async def normalize_node(state: ProductDecisionState) -> dict:
-    prompt = f"""
-RESEARCH NOTES:
-{state['research_notes']}
-
-RAW SEARCH RESULTS:
-{state.get('raw_search_results', '')}
-
-Extract only products that are actually supported by the evidence.
-For missing text fields, use null or "Unknown". Do not invent values.
-"""
-    result = await run_agent(normalizer_agent, prompt)
-    raw_data = extract_json(result["answer"])
-    data = sanitize_product_payload(raw_data)
+    # Defensive validation: malformed model output should not crash the app.
     try:
         products = ProductList.model_validate(data)
-    except ValidationError as exc:
-        # Last-resort safety path: never crash the entire user search because
-        # of malformed optional LLM fields. Keep only safely sanitized items.
+    except ValidationError:
         safe_products = []
-        for item in data.get("products", []):
+        for p in clean_products:
             try:
-                safe_products.append(Product.model_validate(item))
+                safe_products.append(Product.model_validate(p))
             except ValidationError:
                 continue
         products = ProductList(products=safe_products)
-        logger.warning("Product normalization validation recovered from malformed LLM fields: %s", exc)
-
     updates = {
         "products_json": products.model_dump_json(),
         "metrics": merge_metrics(state, "normalizer", result["metadata"]),
@@ -1120,7 +1105,10 @@ async def run_pipeline(query: str, thread_id: str) -> dict:
 
     result = await pipeline.ainvoke(
         initial_state,
-        config={"configurable": {"thread_id": thread_id}},
+        config={
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": 30,
+        },
     )
 
     return result
